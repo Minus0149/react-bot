@@ -23,11 +23,38 @@ const client = new Client({
 
 const PREFIX = "!";
 
-client.once("ready", () => {
+// --- 🚀 CACHE LAYER ---
+// Key: "guildId_userId", Value: string[] (emojis)
+const reactionCache = new Map<string, string[]>();
+
+async function loadCache() {
+  console.log("🔄 Loading Reaction Cache...");
+  const start = Date.now();
+  try {
+    const allConfigs = await MentionReaction.find({});
+    reactionCache.clear();
+    for (const config of allConfigs) {
+      reactionCache.set(
+        `${config.guildId}_${config.triggerUserId}`,
+        config.emojis,
+      );
+    }
+    console.log(
+      `✅ Cache Hot: ${reactionCache.size} configs loaded in ${Date.now() - start}ms`,
+    );
+  } catch (e) {
+    console.error("❌ Failed to load cache:", e);
+  }
+}
+
+client.once("ready", async () => {
   console.log(`🤖 ReactBot is online as ${client.user?.tag}`);
   console.log(
     `🔗 Invite: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=274878024768&scope=bot`,
   );
+
+  // Hydrate Cache on Boot
+  await loadCache();
 });
 
 // Database Connection
@@ -39,23 +66,20 @@ mongoose
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
-  // --- 1. REACTION LOGIC ---
+  // --- 1. OPTIMIZED REACTION LOGIC ---
+  // ⚡ READ FROM MEMORY (0ms Latency, No DB Calls)
   if (message.guild && message.mentions.users.size > 0) {
-    try {
-      message.mentions.users.forEach(async (user) => {
-        const config = await MentionReaction.findOne({
-          guildId: message.guild!.id,
-          triggerUserId: user.id,
-        });
+    // Iterate strictly over the mentions
+    for (const [userId, user] of message.mentions.users) {
+      const key = `${message.guild.id}_${userId}`;
+      const emojis = reactionCache.get(key);
 
-        if (config && config.emojis && config.emojis.length > 0) {
-          for (const emoji of config.emojis) {
-            await message.react(emoji).catch(() => {});
-          }
+      if (emojis && emojis.length > 0) {
+        for (const emoji of emojis) {
+          // Catch errors individually so one failure doesn't stop others
+          message.react(emoji).catch(() => null);
         }
-      });
-    } catch (error) {
-      console.error("Reaction Error:", error);
+      }
     }
   }
 
@@ -66,7 +90,6 @@ client.on("messageCreate", async (message) => {
   const commandName = args.shift()?.toLowerCase();
 
   if (commandName === "reactmention") {
-    // Permission Check
     // Permission Check: Whitelist Logic from .env
     const allowedIds = (process.env.ALLOWED_USER_IDS || "")
       .split(",")
@@ -91,11 +114,16 @@ client.on("messageCreate", async (message) => {
       }
 
       try {
+        // 1. Update Database
         await MentionReaction.findOneAndUpdate(
           { guildId: message.guild!.id, triggerUserId: user.id },
           { $set: { emojis: emojis } },
           { upsert: true, new: true },
         );
+
+        // 2. Update Cache INSTANTLY
+        reactionCache.set(`${message.guild!.id}_${user.id}`, emojis);
+
         await message.reply(
           `✅ Configured reaction for ${user.tag}: ${emojis.join(" ")}`,
         );
@@ -113,8 +141,13 @@ client.on("messageCreate", async (message) => {
         guildId: message.guild!.id,
         triggerUserId: user.id,
       });
+
+      // Remove from Cache
+      reactionCache.delete(`${message.guild!.id}_${user.id}`);
+
       await message.reply(`✅ Removed config for ${user.tag}.`);
     } else if (action === "list") {
+      // Read from Cache to show current state
       const configs = await MentionReaction.find({
         guildId: message.guild!.id,
       });
