@@ -3,6 +3,7 @@ import {
   GuildMember,
   VoiceChannel,
   MessageFlags,
+  PermissionFlagsBits,
 } from "discord.js";
 import {
   getVCByOwner,
@@ -33,6 +34,11 @@ export async function handleVCCommand(
     return handleClaimCmd(interaction, member);
   }
 
+  // For drag, no ownership check (but mod verification done inside)
+  if (subcommand === "drag") {
+    return handleDragCmd(interaction, member);
+  }
+
   // Find user's VC
   const vc = getVCByOwner(interaction.guildId!, member.id);
   if (!vc || vc.ownerId !== member.id) {
@@ -56,9 +62,6 @@ export async function handleVCCommand(
   }
 
   switch (subcommand) {
-    case "drag":
-      return handleDragCmd(interaction, channel, member);
-
     case "lock":
       await channel.permissionOverwrites.edit(interaction.guild!.id, {
         Connect: false,
@@ -335,9 +338,30 @@ async function handleClaimCmd(
 
 async function handleDragCmd(
   interaction: ChatInputCommandInteraction,
-  targetChannel: VoiceChannel,
   member: GuildMember,
 ): Promise<void> {
+  const isMod =
+    member.permissions.has(PermissionFlagsBits.Administrator) ||
+    member.roles.cache.some((role) => getModRoleIds().includes(role.id));
+
+  if (!isMod) {
+    await interaction.reply({
+      content:
+        "❌ You must be an Administrator or a Moderator to use this command.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  const targetChannel = member.voice.channel;
+  if (!targetChannel) {
+    await interaction.reply({
+      content: "❌ You must be in a voice channel first to drag users into it.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
   const sourceChannelId = interaction.options.getChannel("channel", true).id;
   const sourceChannel = interaction.guild!.channels.cache.get(sourceChannelId);
 
