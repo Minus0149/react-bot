@@ -3,11 +3,22 @@ import {
   GatewayIntentBits,
   Partials,
   EmbedBuilder,
-  PermissionFlagsBits,
+  Events,
+  MessageFlags,
 } from "discord.js";
 import mongoose from "mongoose";
 import dotenv from "dotenv";
 import { MentionReaction } from "./models/MentionReaction";
+import {
+  initVCSystem,
+  handleVoiceStateUpdate,
+  handleChannelDelete,
+} from "./vc/vcManager";
+import { isVCButton, handleVCButton } from "./vc/vcButtons";
+import { isVCModal, handleVCModal } from "./vc/vcModals";
+import { isVCSelectMenu, handleVCSelectMenu } from "./vc/vcSelectMenus";
+import { handleSetupCommand, handleUpdatePanel } from "./vc/vcSetup";
+import { handleVCCommand } from "./vc/vcCommands";
 
 dotenv.config();
 
@@ -17,6 +28,7 @@ const client = new Client({
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
     GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.GuildVoiceStates,
   ],
   partials: [Partials.Message, Partials.Channel, Partials.Reaction],
 });
@@ -24,7 +36,6 @@ const client = new Client({
 const PREFIX = "!";
 
 // --- 🚀 CACHE LAYER ---
-// Key: "guildId_userId", Value: string[] (emojis)
 const reactionCache = new Map<string, string[]>();
 
 async function loadCache() {
@@ -50,33 +61,141 @@ async function loadCache() {
 client.once("ready", async () => {
   console.log(`🤖 ReactBot is online as ${client.user?.tag}`);
   console.log(
-    `🔗 Invite: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=274878024768&scope=bot`,
+    `🔗 Invite: https://discord.com/api/oauth2/authorize?client_id=${client.user?.id}&permissions=301288528&scope=bot%20applications.commands`,
   );
 
   // Hydrate Cache on Boot
   await loadCache();
+
+  // Initialize VC System
+  await initVCSystem(client);
 });
 
-// Database Connection
-mongoose
-  .connect(process.env.MONGODB_URI || "")
-  .then(() => console.log("📦 Connected to MongoDB"))
-  .catch((err) => console.error("❌ MongoDB Error:", err));
+// ══════════════════════════════════════════════
+// STARTUP — Connect DB first, then login
+// ══════════════════════════════════════════════
+
+async function start() {
+  try {
+    await mongoose.connect(process.env.MONGODB_URI || "");
+    console.log("📦 Connected to MongoDB");
+  } catch (err) {
+    console.error("⚠️ MongoDB connection failed — bot will still start:", err);
+  }
+
+  await client.login(process.env.DISCORD_TOKEN);
+}
+
+start();
+// ══════════════════════════════════════════════
+
+client.on(Events.InteractionCreate, async (interaction) => {
+  console.log(
+    `[Interaction] Type: ${interaction.type}, ${interaction.isChatInputCommand() ? `Command: ${(interaction as any).commandName}` : `CustomId: ${(interaction as any).customId || "N/A"}`}`,
+  );
+  try {
+    // ── Slash Commands ──
+    if (interaction.isChatInputCommand()) {
+      console.log(
+        `[Interaction] Handling slash command: ${interaction.commandName}`,
+      );
+      switch (interaction.commandName) {
+        case "setup":
+          await handleSetupCommand(interaction);
+          break;
+        case "vc_update":
+          await handleUpdatePanel(interaction);
+          break;
+        case "vc":
+          await handleVCCommand(interaction);
+          break;
+        default:
+          console.log(
+            `[Interaction] Unknown command: ${interaction.commandName}`,
+          );
+          break;
+      }
+      return;
+    }
+
+    // ── Button Presses ──
+    if (interaction.isButton()) {
+      if (isVCButton(interaction.customId)) {
+        await handleVCButton(interaction);
+      }
+      return;
+    }
+
+    // ── Modal Submissions ──
+    if (interaction.isModalSubmit()) {
+      if (isVCModal(interaction.customId)) {
+        await handleVCModal(interaction);
+      }
+      return;
+    }
+
+    // ── Select Menus (String + User) ──
+    if (interaction.isStringSelectMenu() || interaction.isUserSelectMenu()) {
+      if (isVCSelectMenu(interaction.customId)) {
+        await handleVCSelectMenu(interaction);
+      }
+      return;
+    }
+  } catch (error) {
+    console.error("[Interaction] Error:", error);
+    try {
+      if (interaction.isRepliable()) {
+        if (interaction.replied || interaction.deferred) {
+          await interaction.followUp({
+            content: "❌ Something went wrong.",
+            flags: MessageFlags.Ephemeral,
+          } as any);
+        } else {
+          await interaction.reply({
+            content: "❌ Something went wrong.",
+            flags: MessageFlags.Ephemeral,
+          });
+        }
+      }
+    } catch {
+      // Ignore follow-up errors
+    }
+  }
+});
+
+// ══════════════════════════════════════════════
+// VOICE STATE UPDATE — Join-to-Create + Auto-Delete
+// ══════════════════════════════════════════════
+
+client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
+  await handleVoiceStateUpdate(oldState, newState, client);
+});
+
+// ══════════════════════════════════════════════
+// CHANNEL DELETE — Cleanup orphaned temp VCs
+// ══════════════════════════════════════════════
+
+client.on(Events.ChannelDelete, async (channel) => {
+  if (!channel.isDMBased()) {
+    await handleChannelDelete(channel);
+  }
+});
+
+// ══════════════════════════════════════════════
+// MESSAGE CREATE — Prefix commands (reactions)
+// ══════════════════════════════════════════════
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
 
   // --- 1. OPTIMIZED REACTION LOGIC ---
-  // ⚡ READ FROM MEMORY (0ms Latency, No DB Calls)
   if (message.guild && message.mentions.users.size > 0) {
-    // Iterate strictly over the mentions
     for (const [userId, user] of message.mentions.users) {
       const key = `${message.guild.id}_${userId}`;
       const emojis = reactionCache.get(key);
 
       if (emojis && emojis.length > 0) {
         for (const emoji of emojis) {
-          // Catch errors individually so one failure doesn't stop others
           message.react(emoji).catch(() => null);
         }
       }
@@ -96,9 +215,6 @@ client.on("messageCreate", async (message) => {
       .map((id) => id.trim());
 
     if (!allowedIds.includes(message.author.id)) {
-      // await message.reply(
-      //   "❌ **Access Denied:** You are not authorized to manage reactions.",
-      // );
       return;
     }
 
@@ -114,14 +230,12 @@ client.on("messageCreate", async (message) => {
       }
 
       try {
-        // 1. Update Database
         await MentionReaction.findOneAndUpdate(
           { guildId: message.guild!.id, triggerUserId: user.id },
           { $set: { emojis: emojis } },
           { upsert: true, new: true },
         );
 
-        // 2. Update Cache INSTANTLY
         reactionCache.set(`${message.guild!.id}_${user.id}`, emojis);
 
         await message.reply(
@@ -142,12 +256,10 @@ client.on("messageCreate", async (message) => {
         triggerUserId: user.id,
       });
 
-      // Remove from Cache
       reactionCache.delete(`${message.guild!.id}_${user.id}`);
 
       await message.reply(`✅ Removed config for ${user.tag}.`);
     } else if (action === "list") {
-      // Read from Cache to show current state
       const configs = await MentionReaction.find({
         guildId: message.guild!.id,
       });
@@ -168,5 +280,3 @@ client.on("messageCreate", async (message) => {
     }
   }
 });
-
-client.login(process.env.DISCORD_TOKEN);
