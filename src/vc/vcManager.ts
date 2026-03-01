@@ -261,45 +261,77 @@ export async function createTempVC(
   }
 
   try {
-    // Build permission overwrites — owner gets full control
-    const botMember = guild.members.me!;
-    const overwrites: any[] = [
-      {
-        id: member.id,
-        allow: [
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.ManageChannels,
-          PermissionsBitField.Flags.MoveMembers,
-          PermissionsBitField.Flags.MuteMembers,
-          PermissionsBitField.Flags.DeafenMembers,
-        ],
-      },
-      // Bot always keeps full access
-      {
-        id: botMember.id,
-        allow: [
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.ViewChannel,
-          PermissionsBitField.Flags.ManageChannels,
-          PermissionsBitField.Flags.ManageRoles,
-          PermissionsBitField.Flags.MoveMembers,
-          PermissionsBitField.Flags.MuteMembers,
-          PermissionsBitField.Flags.DeafenMembers,
-        ],
-      },
-    ];
+    // Fetch category to inherit permissions
+    const category = guild.channels.cache.get(config.categoryId);
+    const overwritesMap = new Map<string, any>();
 
-    // Privileged roles (bots + mods) always have connect + view
-    for (const roleId of getPrivilegedRoleIds()) {
-      overwrites.push({
-        id: roleId,
-        allow: [
-          PermissionsBitField.Flags.Connect,
-          PermissionsBitField.Flags.ViewChannel,
-        ],
+    // 1. Inherit from category
+    if (category && "permissionOverwrites" in category) {
+      category.permissionOverwrites.cache.forEach((ow) => {
+        overwritesMap.set(ow.id, {
+          id: ow.id,
+          allow: ow.allow.bitfield,
+          deny: ow.deny.bitfield,
+          type: ow.type,
+        });
       });
     }
+
+    // Helper to merge overwrites locally
+    const addOverwrite = (id: string, type: number, allowBits: bigint[]) => {
+      const existing = overwritesMap.get(id);
+      let allowBitfield = existing ? BigInt(existing.allow) : BigInt(0);
+      let denyBitfield = existing ? BigInt(existing.deny) : BigInt(0);
+
+      for (const bit of allowBits) allowBitfield |= bit;
+
+      overwritesMap.set(id, {
+        id,
+        type,
+        allow: allowBitfield,
+        deny: denyBitfield,
+      });
+    };
+
+    const botMember = guild.members.me!;
+
+    // 2. Apply owner permissions (type 1 = member)
+    addOverwrite(member.id, 1, [
+      PermissionsBitField.Flags.Connect,
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.ManageChannels,
+      PermissionsBitField.Flags.MoveMembers,
+      PermissionsBitField.Flags.MuteMembers,
+      PermissionsBitField.Flags.DeafenMembers,
+    ]);
+
+    // 3. Apply bot permissions (type 1 = member)
+    addOverwrite(botMember.id, 1, [
+      PermissionsBitField.Flags.Connect,
+      PermissionsBitField.Flags.ViewChannel,
+      PermissionsBitField.Flags.ManageChannels,
+      PermissionsBitField.Flags.ManageRoles,
+      PermissionsBitField.Flags.MoveMembers,
+      PermissionsBitField.Flags.MuteMembers,
+      PermissionsBitField.Flags.DeafenMembers,
+    ]);
+
+    // 4. Apply @everyone permissions (type 0 = role)
+    // Explicitly enable Video/Screenshare and Activities for everyone
+    addOverwrite(guild.id, 0, [
+      PermissionsBitField.Flags.Stream,
+      PermissionsBitField.Flags.UseEmbeddedActivities,
+    ]);
+
+    // 5. Privileged roles (bots + mods) always have connect + view
+    for (const roleId of getPrivilegedRoleIds()) {
+      addOverwrite(roleId, 0, [
+        PermissionsBitField.Flags.Connect,
+        PermissionsBitField.Flags.ViewChannel,
+      ]);
+    }
+
+    const overwrites = Array.from(overwritesMap.values());
 
     const channel = await guild.channels.create({
       name: `${member.displayName}'s channel`,
