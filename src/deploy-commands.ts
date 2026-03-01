@@ -3,6 +3,7 @@ import {
   Routes,
   SlashCommandBuilder,
   PermissionFlagsBits,
+  ChannelType,
 } from "discord.js";
 import dotenv from "dotenv";
 
@@ -139,6 +140,18 @@ const vcCommand = new SlashCommandBuilder()
   )
   .addSubcommand((sub) =>
     sub.setName("claim").setDescription("Claim an abandoned voice channel"),
+  )
+  .addSubcommand((sub) =>
+    sub
+      .setName("drag")
+      .setDescription("Drag all users from another voice channel into yours")
+      .addChannelOption((opt) =>
+        opt
+          .setName("channel")
+          .setDescription("The voice channel to drag users from")
+          .setRequired(true)
+          .addChannelTypes(ChannelType.GuildVoice, ChannelType.GuildStageVoice),
+      ),
   )
   .addSubcommand((sub) =>
     sub

@@ -56,6 +56,9 @@ export async function handleVCCommand(
   }
 
   switch (subcommand) {
+    case "drag":
+      return handleDragCmd(interaction, channel, member);
+
     case "lock":
       await channel.permissionOverwrites.edit(interaction.guild!.id, {
         Connect: false,
@@ -326,4 +329,60 @@ async function handleClaimCmd(
       flags: MessageFlags.Ephemeral,
     });
   }
+}
+
+// ── Drag Cmd ──
+
+async function handleDragCmd(
+  interaction: ChatInputCommandInteraction,
+  targetChannel: VoiceChannel,
+  member: GuildMember,
+): Promise<void> {
+  const sourceChannelId = interaction.options.getChannel("channel", true).id;
+  const sourceChannel = interaction.guild!.channels.cache.get(sourceChannelId);
+
+  if (!sourceChannel || !sourceChannel.isVoiceBased()) {
+    await interaction.reply({
+      content: "❌ Invalid source channel selected.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  if (sourceChannel.id === targetChannel.id) {
+    await interaction.reply({
+      content: "❌ You cannot drag users from your own channel.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  // Get members to move
+  const membersToMove = sourceChannel.members.filter((m) => !m.user.bot);
+
+  if (membersToMove.size === 0) {
+    await interaction.reply({
+      content: "❌ The selected channel is empty (or only contains bots).",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  await interaction.deferReply({ flags: MessageFlags.Ephemeral });
+
+  let movedCount = 0;
+  for (const [memberId, m] of membersToMove) {
+    if (m.voice && m.voice.channelId === sourceChannel.id) {
+      try {
+        await m.voice.setChannel(targetChannel);
+        movedCount++;
+      } catch (err) {
+        console.error(`Attempt to move user ${memberId} failed:`, err);
+      }
+    }
+  }
+
+  await interaction.editReply({
+    content: `✅ Successfully dragged **${movedCount}** user(s) into your channel.`,
+  });
 }
