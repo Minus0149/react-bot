@@ -31,7 +31,7 @@ export function buildVCPanelEmbed(): EmbedBuilder {
     .setColor(0x9b59b6)
     .setAuthor({ name: "Voice Channel Interface" })
     .setDescription(description)
-    .setFooter({ text: "Custom Voice Channels • Powered by NaraX" });
+    .setFooter({ text: "Custom Voice Channels • Powered by MiNUs" });
 }
 
 export function buildVCPanelRows(): ActionRowBuilder<ButtonBuilder>[] {
