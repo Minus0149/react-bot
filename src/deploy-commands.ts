@@ -84,9 +84,12 @@ const vcCommand = new SlashCommandBuilder()
   .addSubcommand((sub) =>
     sub
       .setName("permit")
-      .setDescription("Permit a user (unban + grant access)")
+      .setDescription("Permit a user or role (unban + grant access)")
       .addUserOption((opt) =>
-        opt.setName("user").setDescription("User to permit").setRequired(true),
+        opt.setName("user").setDescription("User to permit").setRequired(false),
+      )
+      .addRoleOption((opt) =>
+        opt.setName("role").setDescription("Role to permit").setRequired(false),
       ),
   )
   .addSubcommand((sub) =>

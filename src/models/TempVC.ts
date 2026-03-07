@@ -3,6 +3,7 @@ import { Schema, model, Document } from "mongoose";
 export interface ITempVCSettings {
   locked: boolean;
   hidden: boolean;
+  chatEnabled: boolean;
   userLimit: number;
   bitrate: number;
   region: string | null;
@@ -26,6 +27,7 @@ const TempVCSchema = new Schema({
   settings: {
     locked: { type: Boolean, default: false },
     hidden: { type: Boolean, default: false },
+    chatEnabled: { type: Boolean, default: false },
     userLimit: { type: Number, default: 0 },
     bitrate: { type: Number, default: 64 },
     region: { type: String, default: null },

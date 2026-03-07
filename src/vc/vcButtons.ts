@@ -7,6 +7,7 @@ import {
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   UserSelectMenuBuilder,
+  RoleSelectMenuBuilder,
   MessageFlags,
   VoiceChannel,
   GuildMember,
@@ -48,6 +49,7 @@ const VC_BUTTON_IDS = [
   "vc_transfer",
   "vc_info",
   "vc_waiting",
+  "vc_chat",
 ];
 
 export function isVCButton(customId: string): boolean {
@@ -155,6 +157,8 @@ export async function handleVCButton(
       return handleBanMenu(interaction, channel);
     case "vc_permit":
       return handlePermitMenu(interaction, channel, vc);
+    case "vc_chat":
+      return handleChat(interaction, channel, vc);
     case "vc_rename":
       return handleRenameModal(interaction);
     case "vc_bitrate":
@@ -178,19 +182,31 @@ async function handleLock(
   channel: VoiceChannel,
   vc: VCData,
 ): Promise<void> {
+  // 1. Deny @everyone Connect
   await channel.permissionOverwrites.edit(interaction.guild!.id, {
     Connect: false,
   });
-  // Preserve access for bot + mod roles
+
+  // 2. Preserve access for bot + mod roles
   for (const roleId of [...getBotRoleIds(), ...getModRoleIds()]) {
     await channel.permissionOverwrites
       .edit(roleId, { Connect: true, ViewChannel: true })
       .catch(() => null);
   }
+
+  // 3. Auto-permit all current members in the VC (temp access until they disconnect)
+  for (const [memberId, member] of channel.members) {
+    if (memberId === vc.ownerId) continue; // owner already has perms
+    if (member.user.bot) continue;
+    await channel.permissionOverwrites
+      .edit(memberId, { Connect: true, ViewChannel: true })
+      .catch(() => null);
+  }
+
   await updateVCSettings(vc.channelId, { locked: true });
   await interaction.reply({
     content:
-      "🔒 Your voice channel has been **locked**. No one can join unless permitted.",
+      "🔒 Your voice channel has been **locked**. Current members retain access until they disconnect.",
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -311,24 +327,32 @@ async function handleBanMenu(
   });
 }
 
-// ── Permit (User Select) ──
+// ── Permit (Dual Select: User + Role) ──
 
 async function handlePermitMenu(
   interaction: ButtonInteraction,
   channel: VoiceChannel,
   vc: VCData,
 ): Promise<void> {
-  const selectRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
+  const userRow = new ActionRowBuilder<UserSelectMenuBuilder>().addComponents(
     new UserSelectMenuBuilder()
       .setCustomId("vc_select_permit")
-      .setPlaceholder("Select a user to permit")
+      .setPlaceholder("👤 Select a user to permit")
+      .setMinValues(1)
+      .setMaxValues(1),
+  );
+
+  const roleRow = new ActionRowBuilder<RoleSelectMenuBuilder>().addComponents(
+    new RoleSelectMenuBuilder()
+      .setCustomId("vc_select_permit_role")
+      .setPlaceholder("👥 Select a role to permit")
       .setMinValues(1)
       .setMaxValues(1),
   );
 
   await interaction.reply({
-    content: "✅ Select a user to **permit** (unban + grant access):",
-    components: [selectRow],
+    content: "✅ **Permit** — Select a **user** or a **role** to grant access:",
+    components: [userRow, roleRow],
     flags: MessageFlags.Ephemeral,
   });
 }
@@ -516,6 +540,7 @@ async function handleInfo(
     `**Owner:** ${ownerUser?.tag || vc.ownerId}`,
     `**Locked:** ${vc.settings.locked ? "Yes 🔒" : "No 🔓"}`,
     `**Hidden:** ${vc.settings.hidden ? "Yes 👁️" : "No 👀"}`,
+    `**Chat:** ${vc.settings.chatEnabled ? "Enabled 💬" : "Disabled 🔇"}`,
     `**User Limit:** ${vc.settings.userLimit || "Unlimited"}`,
     `**Bitrate:** ${vc.settings.bitrate}kbps`,
     `**Region:** ${vc.settings.region || "Auto"}`,
@@ -679,4 +704,28 @@ async function handleReqDeny(
     components: [],
   });
   setTimeout(() => interaction.deleteReply().catch(() => null), 10000);
+}
+
+// ── Chat Toggle ──
+
+async function handleChat(
+  interaction: ButtonInteraction,
+  channel: VoiceChannel,
+  vc: VCData,
+): Promise<void> {
+  const enabling = !vc.settings.chatEnabled;
+
+  // Toggle SendMessages for @everyone on the VC
+  await channel.permissionOverwrites.edit(interaction.guild!.id, {
+    SendMessages: enabling ? true : false,
+  });
+
+  await updateVCSettings(vc.channelId, { chatEnabled: enabling });
+
+  await interaction.reply({
+    content: enabling
+      ? "💬 Text chat has been **enabled** for everyone in this voice channel."
+      : "🔇 Text chat has been **disabled** for this voice channel.",
+    flags: MessageFlags.Ephemeral,
+  });
 }

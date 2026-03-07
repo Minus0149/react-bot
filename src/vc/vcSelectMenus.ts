@@ -1,6 +1,7 @@
 import {
   StringSelectMenuInteraction,
   UserSelectMenuInteraction,
+  RoleSelectMenuInteraction,
   GuildMember,
   VoiceChannel,
   MessageFlags,
@@ -31,6 +32,7 @@ const VC_SELECT_IDS = [
   "vc_select_invite",
   "vc_select_ban",
   "vc_select_permit",
+  "vc_select_permit_role",
   "vc_select_transfer",
   "vc_select_region",
   "vc_approve_waiting",
@@ -42,7 +44,10 @@ export function isVCSelectMenu(customId: string): boolean {
 }
 
 export async function handleVCSelectMenu(
-  interaction: StringSelectMenuInteraction | UserSelectMenuInteraction,
+  interaction:
+    | StringSelectMenuInteraction
+    | UserSelectMenuInteraction
+    | RoleSelectMenuInteraction,
 ): Promise<void> {
   const member = interaction.member as GuildMember;
   if (!member) {
@@ -68,20 +73,35 @@ export async function handleVCSelectMenu(
     );
   }
 
-  // All others are UserSelectMenus
-  const userInteraction = interaction as UserSelectMenuInteraction;
-
+  // All others are UserSelectMenus or RoleSelectMenus
   switch (interaction.customId) {
     case "vc_select_invite":
-      return handleInviteSelect(userInteraction, member);
+      return handleInviteSelect(
+        interaction as UserSelectMenuInteraction,
+        member,
+      );
     case "vc_select_ban":
-      return handleBanSelect(userInteraction, member);
+      return handleBanSelect(interaction as UserSelectMenuInteraction, member);
     case "vc_select_permit":
-      return handlePermitSelect(userInteraction, member);
+      return handlePermitSelect(
+        interaction as UserSelectMenuInteraction,
+        member,
+      );
+    case "vc_select_permit_role":
+      return handlePermitRoleSelect(
+        interaction as RoleSelectMenuInteraction,
+        member,
+      );
     case "vc_select_transfer":
-      return handleTransferSelect(userInteraction, member);
+      return handleTransferSelect(
+        interaction as UserSelectMenuInteraction,
+        member,
+      );
     case "vc_approve_waiting":
-      return handleApproveWaiting(userInteraction, member);
+      return handleApproveWaiting(
+        interaction as UserSelectMenuInteraction,
+        member,
+      );
     default:
       await interaction.reply({
         content: "❌ Unknown selection.",
@@ -238,6 +258,36 @@ async function handlePermitSelect(
     .catch(() => null);
   await interaction.update({
     content: `✅ ${target?.displayName || targetId} has been **permitted** — ban removed, access granted.`,
+    components: [],
+  });
+}
+
+// ── Permit Role ──
+
+async function handlePermitRoleSelect(
+  interaction: RoleSelectMenuInteraction,
+  member: GuildMember,
+): Promise<void> {
+  const resolved = await resolveUserVC(interaction as any, member);
+  if (!resolved) return;
+
+  const roleId = interaction.values[0];
+  const role = interaction.guild!.roles.cache.get(roleId);
+
+  if (!role) {
+    await interaction.update({ content: "❌ Role not found.", components: [] });
+    return;
+  }
+
+  // Grant connect + view to the entire role
+  await resolved.channel.permissionOverwrites.edit(roleId, {
+    Connect: true,
+    ViewChannel: true,
+  });
+  await addPermitted(resolved.vc.channelId, roleId);
+
+  await interaction.update({
+    content: `✅ Role **@${role.name}** has been **permitted** — all members with this role now have access.`,
     components: [],
   });
 }

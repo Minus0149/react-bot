@@ -9,6 +9,7 @@ import {
   ActionRowBuilder,
   StringSelectMenuBuilder,
   TextChannel,
+  PermissionFlagsBits,
 } from "discord.js";
 import { GuildVC, IGuildVC } from "../models/GuildVC";
 import { TempVC, ITempVC, ITempVCSettings } from "../models/TempVC";
@@ -127,6 +128,7 @@ export async function initVCSystem(client: Client): Promise<void> {
     // Load active temp VCs & validate
     const tempVCs = await TempVC.find({});
     let cleaned = 0;
+    const emptyChannels: string[] = [];
 
     for (const vc of tempVCs) {
       try {
@@ -154,16 +156,32 @@ export async function initVCSystem(client: Client): Promise<void> {
           banned: vc.banned,
           permitted: vc.permitted,
         });
+
+        // If channel exists but is empty, schedule for deletion
+        if (
+          channel.isVoiceBased() &&
+          (channel as VoiceChannel).members.size === 0
+        ) {
+          emptyChannels.push(vc.channelId);
+        }
       } catch {
         await TempVC.deleteOne({ channelId: vc.channelId }).catch(() => null);
         cleaned++;
       }
     }
 
+    // Schedule deletion for empty channels found on startup
+    for (const channelId of emptyChannels) {
+      scheduleDelete(channelId, client);
+    }
+
     console.log(
       `✅ VC cache hot: ${activeVCs.size} active VCs, ${guildConfigs.size} guild configs ` +
-        `(${cleaned} orphans cleaned) in ${Date.now() - start}ms`,
+        `(${cleaned} orphans cleaned, ${emptyChannels.length} empty VCs queued for deletion) in ${Date.now() - start}ms`,
     );
+
+    // Start periodic cleanup sweep
+    startPeriodicCleanup(client);
   } catch (error) {
     console.error(
       "⚠️ VC cache hydration failed (DB may be unavailable). System will work on-demand:",
@@ -347,6 +365,7 @@ export async function createTempVC(
       settings: {
         locked: false,
         hidden: false,
+        chatEnabled: false,
         userLimit: 0,
         bitrate: 64,
         region: null,
@@ -378,18 +397,27 @@ export async function createTempVC(
   }
 }
 
-export async function deleteTempVC(channelId: string): Promise<void> {
+export async function deleteTempVC(
+  channelId: string,
+  client?: Client,
+): Promise<void> {
   const vc = activeVCs.get(channelId);
   if (!vc) return;
 
   // Clear any pending delete timer
   clearDeleteTimer(channelId);
 
-  try {
-    // Try to delete the Discord channel
-    const guild = (await import("discord.js")).default; // no-op, we get it from cache
-  } catch {
-    // Channel may already be deleted — that's fine
+  // Actually delete the Discord channel
+  if (client) {
+    try {
+      const guild = client.guilds.cache.get(vc.guildId);
+      const channel = guild?.channels.cache.get(channelId);
+      if (channel) {
+        await channel.delete("Temp VC cleanup").catch(() => null);
+      }
+    } catch {
+      // Channel may already be deleted — that's fine
+    }
   }
 
   await deleteTempVCData(channelId);
@@ -397,6 +425,7 @@ export async function deleteTempVC(channelId: string): Promise<void> {
 
 async function deleteTempVCData(channelId: string): Promise<void> {
   activeVCs.delete(channelId);
+  clearRateLimits(channelId);
   await TempVC.deleteOne({ channelId }).catch(() => null);
 }
 
@@ -417,6 +446,30 @@ function scheduleDelete(channelId: string, client: Client): void {
         await channel.delete("Temp VC empty — auto-cleanup").catch(() => null);
         await deleteTempVCData(channelId);
         console.log(`🗑️ Auto-deleted empty VC: ${channelId}`);
+
+        // Verification retry: confirm deletion after 5s
+        setTimeout(async () => {
+          try {
+            const g = client.guilds.cache.get(vc.guildId);
+            const stillExists = g?.channels.cache.get(channelId);
+            if (stillExists) {
+              console.log(`⚠️ VC ${channelId} survived deletion, retrying...`);
+              await stillExists
+                .delete("Temp VC retry cleanup")
+                .catch(() => null);
+            }
+            // Ensure cache is clean regardless
+            if (activeVCs.has(channelId)) {
+              await deleteTempVCData(channelId);
+            }
+          } catch {
+            // Best-effort retry
+          }
+        }, 5_000);
+      } else if (!channel) {
+        // Channel already gone from cache — just clean data
+        await deleteTempVCData(channelId);
+        console.log(`🗑️ Cleaned orphaned VC data: ${channelId}`);
       }
     } catch {
       await deleteTempVCData(channelId);
@@ -434,6 +487,57 @@ function clearDeleteTimer(channelId: string): void {
     clearTimeout(timer);
     deleteTimers.delete(channelId);
   }
+}
+
+// ══════════════════════════════════════════════
+// PERIODIC CLEANUP — Sweep for ghost VCs
+// ══════════════════════════════════════════════
+
+const CLEANUP_INTERVAL = 60_000; // 60s sweep
+
+function startPeriodicCleanup(client: Client): void {
+  setInterval(async () => {
+    let swept = 0;
+
+    for (const [channelId, vc] of activeVCs.entries()) {
+      try {
+        const guild = client.guilds.cache.get(vc.guildId);
+        if (!guild) {
+          // Guild no longer accessible — clean up
+          await deleteTempVCData(channelId);
+          swept++;
+          continue;
+        }
+
+        const channel = guild.channels.cache.get(channelId) as
+          | VoiceChannel
+          | undefined;
+
+        if (!channel) {
+          // Channel doesn't exist anymore — orphaned data
+          await deleteTempVCData(channelId);
+          swept++;
+          continue;
+        }
+
+        // If empty and no active timer, schedule deletion
+        if (channel.members.size === 0 && !deleteTimers.has(channelId)) {
+          scheduleDelete(channelId, client);
+          swept++;
+        }
+      } catch {
+        // Best-effort — skip this VC
+      }
+    }
+
+    if (swept > 0) {
+      console.log(`🧹 Periodic sweep: queued ${swept} VC(s) for cleanup`);
+    }
+  }, CLEANUP_INTERVAL);
+
+  console.log(
+    `🧹 Periodic VC cleanup started (every ${CLEANUP_INTERVAL / 1000}s)`,
+  );
 }
 
 // ══════════════════════════════════════════════
@@ -614,6 +718,25 @@ export async function handleVoiceStateUpdate(
     } else if (oldChannel && oldChannel.members.size > 0) {
       // Cancel any pending delete
       clearDeleteTimer(oldState.channelId);
+    }
+
+    // Auto-revoke temp access: if VC is locked and user is NOT explicitly permitted
+    const vcData = activeVCs.get(oldState.channelId);
+    if (
+      vcData &&
+      vcData.settings.locked &&
+      member.id !== vcData.ownerId &&
+      !vcData.permitted.includes(member.id)
+    ) {
+      // Check user isn't a privileged role
+      const isPrivileged = getPrivilegedRoleIds().some((roleId) =>
+        member.roles.cache.has(roleId),
+      );
+      if (!isPrivileged && oldChannel) {
+        await oldChannel.permissionOverwrites
+          .delete(member.id)
+          .catch(() => null);
+      }
     }
   }
 

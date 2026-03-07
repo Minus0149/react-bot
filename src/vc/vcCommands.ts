@@ -4,6 +4,7 @@ import {
   VoiceChannel,
   MessageFlags,
   PermissionFlagsBits,
+  PermissionsBitField,
 } from "discord.js";
 import {
   getVCByOwner,
@@ -63,17 +64,28 @@ export async function handleVCCommand(
 
   switch (subcommand) {
     case "lock":
+      // 1. Deny @everyone Connect
       await channel.permissionOverwrites.edit(interaction.guild!.id, {
         Connect: false,
       });
+      // 2. Preserve privileged roles
       for (const roleId of [...getBotRoleIds(), ...getModRoleIds()]) {
         await channel.permissionOverwrites
           .edit(roleId, { Connect: true, ViewChannel: true })
           .catch(() => null);
       }
+      // 3. Auto-permit all current members (temp access until disconnect)
+      for (const [memberId, m] of channel.members) {
+        if (memberId === member.id) continue; // owner already has perms
+        if (m.user.bot) continue;
+        await channel.permissionOverwrites
+          .edit(memberId, { Connect: true, ViewChannel: true })
+          .catch(() => null);
+      }
       await updateVCSettings(vc.channelId, { locked: true });
       await interaction.reply({
-        content: "🔒 Channel **locked**.",
+        content:
+          "🔒 Channel **locked**. Current members retain access until they disconnect.",
         flags: MessageFlags.Ephemeral,
       });
       break;
@@ -178,18 +190,45 @@ export async function handleVCCommand(
     }
 
     case "permit": {
-      const target = interaction.options.getUser("user", true);
-      await channel.permissionOverwrites.delete(target.id).catch(() => null);
-      await channel.permissionOverwrites.edit(target.id, {
-        Connect: true,
-        ViewChannel: true,
-      });
-      await removeBanned(vc.channelId, target.id);
-      await addPermitted(vc.channelId, target.id);
-      await interaction.reply({
-        content: `✅ ${target} has been **permitted**.`,
-        flags: MessageFlags.Ephemeral,
-      });
+      const targetUser = interaction.options.getUser("user");
+      const targetRole = interaction.options.getRole("role");
+
+      if (!targetUser && !targetRole) {
+        await interaction.reply({
+          content:
+            "❌ You must specify either a **user** or a **role** to permit.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+
+      if (targetUser) {
+        await channel.permissionOverwrites
+          .delete(targetUser.id)
+          .catch(() => null);
+        await channel.permissionOverwrites.edit(targetUser.id, {
+          Connect: true,
+          ViewChannel: true,
+        });
+        await removeBanned(vc.channelId, targetUser.id);
+        await addPermitted(vc.channelId, targetUser.id);
+        await interaction.reply({
+          content: `✅ ${targetUser} has been **permitted**.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
+
+      if (targetRole) {
+        await channel.permissionOverwrites.edit(targetRole.id, {
+          Connect: true,
+          ViewChannel: true,
+        });
+        await addPermitted(vc.channelId, targetRole.id);
+        await interaction.reply({
+          content: `✅ Role **@${targetRole.name}** has been **permitted** — all members with this role now have access.`,
+          flags: MessageFlags.Ephemeral,
+        });
+      }
       break;
     }
 

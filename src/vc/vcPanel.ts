@@ -17,10 +17,11 @@ export function buildVCPanelEmbed(): EmbedBuilder {
     "👁️ **Hide** / 👀 **Unhide** — Make your channel invisible to others.",
     "🔢 **Limit** — Set a maximum number of users allowed in.",
     "✉️ **Invite** — DM a user a direct invite link to join your VC.",
-    "🚫 **Ban** / ✅ **Permit** — Block or allow specific users.",
+    "🚫 **Ban** / ✅ **Permit** — Block or allow specific users/roles.",
     "✏️ **Rename** — Change your channel's name (2 per 10 mins).",
     "🎵 **Bitrate** / 🌍 **Region** — Adjust audio quality and routing.",
     "ℹ️ **Info** — View current settings and member counts.",
+    "💬 **Chat** — Toggle text chat for everyone in the VC.",
     "⏳ **Waiting** — View users in Waiting Room and let them in.",
     "👑 **Claim** — Take ownership if the current owner leaves.",
     "🔄 **Transfer** — Give ownership to someone else in the VC.",
@@ -108,6 +109,11 @@ export function buildVCPanelRows(): ActionRowBuilder<ButtonBuilder>[] {
 
   // Row 4: Chat, Waiting, Claim, Transfer
   const row4 = new ActionRowBuilder<ButtonBuilder>().addComponents(
+    new ButtonBuilder()
+      .setCustomId("vc_chat")
+      .setLabel("Chat")
+      .setEmoji("💬")
+      .setStyle(ButtonStyle.Secondary),
     new ButtonBuilder()
       .setCustomId("vc_waiting")
       .setLabel("Waiting")

@@ -134,8 +134,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
       return;
     }
 
-    // ── Select Menus (String + User) ──
-    if (interaction.isStringSelectMenu() || interaction.isUserSelectMenu()) {
+    // ── Select Menus (String + User + Role) ──
+    if (
+      interaction.isStringSelectMenu() ||
+      interaction.isUserSelectMenu() ||
+      interaction.isRoleSelectMenu()
+    ) {
       if (isVCSelectMenu(interaction.customId)) {
         await handleVCSelectMenu(interaction);
       }
