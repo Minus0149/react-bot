@@ -19,6 +19,10 @@ import { isVCModal, handleVCModal } from "./vc/vcModals";
 import { isVCSelectMenu, handleVCSelectMenu } from "./vc/vcSelectMenus";
 import { handleSetupCommand, handleUpdatePanel } from "./vc/vcSetup";
 import { handleVCCommand } from "./vc/vcCommands";
+import { awardMessageXp } from "./leveling/levelingCore";
+import { rollPeriods } from "./leveling/levelingCore";
+import { startVoiceTracker, handleVoiceStateChange } from "./leveling/voiceTracker";
+import { handleLevelCommand, handleRankCommand } from "./leveling/levelCommands";
 
 dotenv.config();
 
@@ -69,6 +73,16 @@ client.once("ready", async () => {
 
   // Initialize VC System
   await initVCSystem(client);
+
+  // Start leveling: voice XP tracker + periodic period-reset scheduler
+  startVoiceTracker(client);
+  setInterval(
+    () => {
+      rollPeriods("*").catch((e) => console.error("[Leveling] period reset error:", e));
+    },
+    60 * 1000,
+  );
+  console.log("📊 Leveling system initialized (voice XP + period resets)");
 });
 
 // ══════════════════════════════════════════════
@@ -108,6 +122,12 @@ client.on(Events.InteractionCreate, async (interaction) => {
           break;
         case "vc":
           await handleVCCommand(interaction);
+          break;
+        case "rank":
+          await handleRankCommand(interaction, client);
+          break;
+        case "level":
+          await handleLevelCommand(interaction, client);
           break;
         default:
           console.log(
@@ -173,6 +193,8 @@ client.on(Events.InteractionCreate, async (interaction) => {
 
 client.on(Events.VoiceStateUpdate, async (oldState, newState) => {
   await handleVoiceStateUpdate(oldState, newState, client);
+  // Leveling voice tracking (synchronous map update — cheap).
+  handleVoiceStateChange(oldState, newState);
 });
 
 // ══════════════════════════════════════════════
@@ -191,6 +213,13 @@ client.on(Events.ChannelDelete, async (channel) => {
 
 client.on("messageCreate", async (message) => {
   if (message.author.bot) return;
+
+  // --- 0. LEVELING — award XP for messages (cooldown + exclusions handled inside) ---
+  if (message.guild && message.member) {
+    awardMessageXp(client, message.member, message.channelId).catch((e) =>
+      console.error("[Leveling] message XP error:", e),
+    );
+  }
 
   // --- 1. OPTIMIZED REACTION LOGIC ---
   if (message.guild && message.mentions.users.size > 0) {
